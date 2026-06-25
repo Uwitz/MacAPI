@@ -1,0 +1,24 @@
+# Auto-detect text files, ensure LF line endings
+* text=auto eol=lf
+
+# Python
+*.py          text eol=lf
+*.pyi         text eol=lf
+
+# Shell / config
+*.sh          text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.toml        text eol=lf
+*.plist       text eol=lf
+
+# Documentation
+*.md          text eol=lf
+LICENSE       text eol=lf
+
+# Secrets — these should NEVER be in the repo, but mark them so a
+# future contributor gets a clear signal if they're accidentally added.
+.env          text eol=lf
+.env.bak      text eol=lf
+*.pem         text eol=lf
+*.key         text eol=lf

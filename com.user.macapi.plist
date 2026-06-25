@@ -1,18 +1,47 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    This is a TEMPLATE. setup.sh generates the real plist at
+    ~/Library/LaunchAgents/com.user.macapi.plist with your paths and
+    OWNER_TOKEN / PASSWORD_HASH baked in. Don't edit this file by hand;
+    run ./setup.sh to (re)generate the installed copy.
+-->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.user.macapi</string>
     <key>ProgramArguments</key>
     <array>
-        <string>uv</string>
+        <string>__UV_BIN__</string>
         <string>run</string>
-        <string>/Users/<username>/MacAPI/main.py</string>
+        <string>--project</string>
+        <string>__PROJECT_DIR__</string>
+        <string>main.py</string>
     </array>
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>OWNER_TOKEN</key>
+        <string>__OWNER_TOKEN__</string>
+        <key>PASSWORD_HASH</key>
+        <string>__PASSWORD_HASH__</string>
+        <key>TLS_CERT</key>
+        <string>__CERT_DIR__/cert.pem</string>
+        <key>TLS_KEY</key>
+        <string>__CERT_DIR__/key.pem</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/server.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/server.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
 </dict>
 </plist>

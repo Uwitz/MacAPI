@@ -205,3 +205,29 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# TLS certificates (generated at runtime; private key never in version control)
+certs/
+
+# VS Code
+.vscode/settings.json
+
+# macOS metadata
+.DS_Store
+
+# Editor / OS scratch files
+*.swp
+*.swo
+*~
+.bak
+*.bak
+.env.bak
+.env.local
+
+# Stray shell-glob fragments (created by accidental `touch word1 word2` etc.)
+/before
+/exist
+/first
+/has
+/run
+/to
