@@ -139,10 +139,24 @@ def press_return() -> None:
 
 
 def lock_screen() -> None:
-    """Lock the Mac by sending Ctrl+Cmd+Q (the standard lock shortcut)."""
-    _send_key(K_CONTROL, True)
-    _send_key(K_COMMAND, True)
-    _send_key(K_ANSI_Q, True)
-    _send_key(K_ANSI_Q, False)
-    _send_key(K_COMMAND, False)
-    _send_key(K_CONTROL, False)
+    """Lock the Mac by sending Ctrl+Cmd+Q (the standard lock shortcut).
+
+    Attaches the Control + Command modifier flags directly to the Q key
+    event via CGEventSetFlags, rather than posting six separate down/up
+    events. This is dramatically more reliable because the OS can't drop
+    any of the events — the key + its modifiers are a single atomic
+    event from the WindowServer's perspective.
+    """
+    import sys
+    print("[lock] sending Ctrl+Cmd+Q (atomic modifier+key event)", file=sys.stderr, flush=True)
+    flags = (
+        Quartz.kCGEventFlagMaskControl
+        | Quartz.kCGEventFlagMaskCommand
+    )
+    event_down = Quartz.CGEventCreateKeyboardEvent(None, K_ANSI_Q, True)
+    Quartz.CGEventSetFlags(event_down, flags)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_down)
+    time.sleep(0.05)
+    event_up = Quartz.CGEventCreateKeyboardEvent(None, K_ANSI_Q, False)
+    Quartz.CGEventSetFlags(event_up, flags)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)

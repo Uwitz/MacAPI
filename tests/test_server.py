@@ -70,39 +70,20 @@ def test_lock_with_auth(client):
 
 
 # ---------------------------------------------------------------------------
-# /unlock: header + body owner_token defense in depth
+# /unlock: Authorization header
 # ---------------------------------------------------------------------------
 
 
 def test_unlock_rejects_missing_authorization_header(client, key_mock):
-    r = client.post("/unlock", json={"owner_token": TOKEN, "password": PASSWORD})
+    r = client.post("/unlock", json={"password": PASSWORD})
     assert r.status_code == 401
 
 
 def test_unlock_rejects_wrong_authorization_header(client, key_mock):
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "password": PASSWORD},
-        headers={"Authorization": "wrong"},
-    )
-    assert r.status_code == 401
-
-
-def test_unlock_rejects_missing_body_owner_token(client, key_mock):
-    r = client.post(
-        "/unlock",
         json={"password": PASSWORD},
-        headers=_auth(),
-    )
-    assert r.status_code == 401
-    assert "owner_token" in r.json()["detail"]
-
-
-def test_unlock_rejects_wrong_body_owner_token(client, key_mock):
-    r = client.post(
-        "/unlock",
-        json={"owner_token": "wrong", "password": PASSWORD},
-        headers=_auth(),
+        headers={"Authorization": "wrong"},
     )
     assert r.status_code == 401
 
@@ -118,7 +99,7 @@ def test_unlock_plaintext_success_types_password(client, key_mock):
          patch("main.press_return") as mock_return:
         r = client.post(
             "/unlock",
-            json={"owner_token": TOKEN, "password": PASSWORD},
+            json={"password": PASSWORD},
             headers=_auth(),
         )
     assert r.status_code == 200
@@ -132,7 +113,7 @@ def test_unlock_plaintext_skips_typing_when_unlocked(client, key_mock):
          patch("main.type_string") as mock_type:
         r = client.post(
             "/unlock",
-            json={"owner_token": TOKEN, "password": PASSWORD},
+            json={"password": PASSWORD},
             headers=_auth(),
         )
     assert r.status_code == 200
@@ -142,7 +123,7 @@ def test_unlock_plaintext_skips_typing_when_unlocked(client, key_mock):
 def test_unlock_plaintext_rejects_empty_string(client, key_mock):
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "password": ""},
+        json={"password": ""},
         headers=_auth(),
     )
     assert r.status_code == 400
@@ -151,7 +132,7 @@ def test_unlock_plaintext_rejects_empty_string(client, key_mock):
 def test_unlock_plaintext_rejects_non_string(client, key_mock):
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "password": 12345},
+        json={"password": 12345},
         headers=_auth(),
     )
     assert r.status_code == 400
@@ -161,7 +142,7 @@ def test_unlock_plaintext_rejects_wrong_password(client, key_mock):
     """A password that doesn't hash to the stored value must be rejected."""
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "password": "wrongpassword"},
+        json={"password": "wrongpassword"},
         headers=_auth(),
     )
     assert r.status_code == 401
@@ -177,7 +158,7 @@ def test_unlock_plaintext_does_not_touch_keychain(client, monkeypatch):
          patch("main.type_string"):
         r = client.post(
             "/unlock",
-            json={"owner_token": TOKEN, "password": PASSWORD},
+            json={"password": PASSWORD},
             headers=_auth(),
         )
     assert r.status_code == 200
@@ -194,7 +175,7 @@ def test_unlock_envelope_success_types_password(client, key_mock):
          patch("main.type_string") as mock_type:
         r = client.post(
             "/unlock",
-            json={"owner_token": TOKEN, "ct": ct, "ts": time.time()},
+            json={"ct": ct, "ts": time.time()},
             headers=_auth(),
         )
     assert r.status_code == 200
@@ -206,7 +187,7 @@ def test_unlock_envelope_rejects_wrong_key(client, key_mock):
     ct = _ios_shortcut_envelope(PASSWORD.encode(), key=b"X" * 32)
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "ct": ct, "ts": time.time()},
+        json={"ct": ct, "ts": time.time()},
         headers=_auth(),
     )
     assert r.status_code == 401
@@ -216,7 +197,7 @@ def test_unlock_envelope_rejects_old_timestamp(client, key_mock):
     ct = _ios_shortcut_envelope(PASSWORD.encode())
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "ct": ct, "ts": time.time() - 120},
+        json={"ct": ct, "ts": time.time() - 120},
         headers=_auth(),
     )
     assert r.status_code == 401
@@ -227,7 +208,7 @@ def test_unlock_envelope_rejects_decrypted_password_with_wrong_hash(client, key_
     ct = _ios_shortcut_envelope(b"wrongpassword")
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "ct": ct, "ts": time.time()},
+        json={"ct": ct, "ts": time.time()},
         headers=_auth(),
     )
     assert r.status_code == 401
@@ -244,7 +225,6 @@ def test_unlock_envelope_zeroizes_key_even_on_failure(client, key_mock):
         r = client.post(
             "/unlock",
             json={
-                "owner_token": TOKEN,
                 "ct": base64.b64encode(b"\x00" * 40).decode(),
                 "ts": time.time(),
             },
@@ -263,7 +243,7 @@ def test_unlock_envelope_zeroizes_key_even_on_failure(client, key_mock):
 def test_unlock_rejects_body_with_no_password_or_envelope(client, key_mock):
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "foo": "bar"},
+        json={"foo": "bar"},
         headers=_auth(),
     )
     assert r.status_code == 400
@@ -286,7 +266,6 @@ def test_unlock_envelope_takes_precedence_over_plaintext(client, key_mock):
         r = client.post(
             "/unlock",
             json={
-                "owner_token": TOKEN,
                 "password": "plaintext-password",
                 "ct": ct,
                 "ts": time.time(),
@@ -307,7 +286,7 @@ def test_unlock_returns_500_when_password_hash_unset(client, key_mock, monkeypat
     monkeypatch.delenv("PASSWORD_HASH", raising=False)
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "password": PASSWORD},
+        json={"password": PASSWORD},
         headers=_auth(),
     )
     assert r.status_code == 500
@@ -320,7 +299,7 @@ def test_unlock_envelope_keychain_failure_returns_500(client, monkeypatch):
     monkeypatch.setattr("main.get_secret", boom)
     r = client.post(
         "/unlock",
-        json={"owner_token": TOKEN, "ct": "AAAA", "ts": time.time()},
+        json={"ct": "AAAA", "ts": time.time()},
         headers=_auth(),
     )
     assert r.status_code == 500

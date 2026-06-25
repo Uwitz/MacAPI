@@ -94,15 +94,10 @@ def _type_password(password: str) -> None:
         press_return()
 
 
-def _check_owner_token(request: Request, body: dict) -> None:
-    """Defense in depth: OWNER_TOKEN must match in BOTH the Authorization
-    header and the JSON body. Either alone is insufficient."""
-    expected = _owner_token()
-    if request.headers.get("Authorization") != expected:
-        raise HTTPException(status_code=401, detail="Invalid Authorization header")
-    body_token = body.get("owner_token") if isinstance(body, dict) else None
-    if body_token != expected:
-        raise HTTPException(status_code=401, detail="Invalid owner_token in body")
+def _check_owner_token(request: Request) -> None:
+    """Verify the Authorization header matches OWNER_TOKEN."""
+    if request.headers.get("Authorization") != _owner_token():
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def _verify_and_type(password: str) -> None:
@@ -128,6 +123,8 @@ def read_root():
 async def lock(request: Request):
     if request.headers.get("Authorization") != _owner_token():
         raise HTTPException(status_code=401, detail="Unauthorized")
+    import sys
+    print(f"[lock] authorized request from {request.client.host}", file=sys.stderr, flush=True)
     lock_screen()
     return "Locked the mac"
 
@@ -143,7 +140,7 @@ async def unlock(request: Request):
         raise HTTPException(status_code=400, detail="Body must be a JSON object")
 
     # Both header AND body must carry the owner token.
-    _check_owner_token(request, body)
+    _check_owner_token(request)
 
     if "ct" in body and "ts" in body:
         return await _unlock_envelope(body)
@@ -152,7 +149,7 @@ async def unlock(request: Request):
 
     raise HTTPException(
         status_code=400,
-        detail="Body must contain 'owner_token'+'password' (or 'owner_token'+'ct'+'ts')",
+        detail="Body must contain 'password' (or 'ct'+'ts' for envelope mode)",
     )
 
 

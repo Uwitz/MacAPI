@@ -34,8 +34,7 @@ The Mac is exposed to the internet via a **Cloudflare Tunnel in TCP mode**, so C
 | Layer | Property | Notes |
 |---|---|---|
 | **In transit (iPhone → Cloudflare → Mac)** | TLS 1.3, AES-256-GCM | End-to-end. Cloudflare is a transparent byte forwarder (TCP tunnel mode), cannot decrypt. ~128-bit post-quantum under Grover. |
-| **Handshake signature** | Ed25519 | Non-NIST (DJB), 128-bit post-quantum. Matches AES-256-GCM's ceiling. ML-DSA-87 cert retained in `certs/` for when iOS supports it. |
-| **Authentication** | `Authorization: <OWNER_TOKEN>` header **AND** `owner_token` in JSON body | Defense in depth: both must match. |
+| **Authentication** | `Authorization: <OWNER_TOKEN>` header | Required on `/lock` and `/unlock`. |
 | **Password verification** | SHA-256 hash in `.env` (constant-time compare) | Wrong password → 401, no typing attempted. |
 | **On Mac (after TLS terminates)** | Password in memory briefly, typed via Quartz | No `osascript`, no `argv`, no `ps` exposure. |
 | **At rest (OWNER_TOKEN, PASSWORD_HASH)** | `.env` (mode 0600) | 32-byte url-safe token, SHA-256 hash. |
@@ -143,16 +142,13 @@ Health check. Returns `MacAPI is online`.
 Locks the Mac with Ctrl+Cmd+Q via Quartz. Requires `Authorization: <OWNER_TOKEN>`.
 
 ### `POST /unlock`
-Verifies both the auth header + body owner_token, then SHA-256-checks the password against `PASSWORD_HASH`, then types it (only if the screen is locked). Body:
+SHA-256-checks the password against `PASSWORD_HASH`, then types it (only if the screen is locked). Body:
 
 ```json
-{
-  "owner_token": "<OWNER_TOKEN>",
-  "password": "the-mac-password"
-}
+{ "password": "the-mac-password" }
 ```
 
-Both `owner_token` in the body AND the `Authorization` header must match `OWNER_TOKEN`. If either is wrong → 401. If the password doesn't hash to `PASSWORD_HASH` → 401. If both pass and the screen is locked → Quartz types the password and presses Return.
+The `Authorization: <OWNER_TOKEN>` header is required. If the header is wrong → 401. If the password doesn't hash to `PASSWORD_HASH` → 401. If both pass and the screen is locked → Quartz types the password and presses Return.
 
 ## Regenerate the cert
 

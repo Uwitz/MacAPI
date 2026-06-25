@@ -96,12 +96,19 @@ def test_press_return_sends_two_events(mock_quartz):
     assert codes == [K_RETURN, K_RETURN]
 
 
-def test_lock_screen_sends_ctrl_cmd_q(mock_quartz):
+def test_lock_screen_sends_ctrl_cmd_q_atomically(mock_quartz):
+    """The lock must use a single key event with Ctrl+Cmd flags attached,
+    not six separate down/up events (which the WindowServer can drop)."""
     lock_screen()
-    assert _event_count(mock_quartz) == 6
+    # Exactly two events: Q down, Q up
+    assert _event_count(mock_quartz) == 2
     codes = [c.args[1] for c in mock_quartz.CGEventCreateKeyboardEvent.call_args_list]
-    # ctrl down, cmd down, q down, q up, cmd up, ctrl up
-    assert codes == [K_CONTROL, K_COMMAND, K_ANSI_Q, K_ANSI_Q, K_COMMAND, K_CONTROL]
+    assert codes == [K_ANSI_Q, K_ANSI_Q]
+    # Both events have the Ctrl+Cmd flags set
+    for call in mock_quartz.CGEventSetFlags.call_args_list:
+        flags = call.args[1]
+        assert flags & mock_quartz.kCGEventFlagMaskControl
+        assert flags & mock_quartz.kCGEventFlagMaskCommand
 
 
 def test_lock_screen_uses_correct_tap(mock_quartz):
