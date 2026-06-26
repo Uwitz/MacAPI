@@ -89,86 +89,51 @@ SHIFTED_CHARS = {
 }
 
 
-def _post_keycode(keycode: int, down: bool, pid: int | None = None) -> None:
-    event = Quartz.CGEventCreateKeyboardEvent(None, keycode, down)
-    if event is None:
-        return
-    if pid is not None:
-        # PyObjC's signature is (pid, event) — reversed from the C header.
-        Quartz.CGEventPostToPid(pid, event)
-    else:
-        Quartz.CGEventPost(Quartz.kCGSessionEventTap, event)
+def _post(keycode: int | None, unicode: str | None, down: bool) -> None:
+    """Post a single keyboard event to the HID event tap.
 
+    Posts to kCGHIDEventTap — the lowest level of the event chain,
+    where real hardware events live. The lock screen's password field
+    accepts events from this tap (it rejects CGEventPostToPid, which
+    is deprecated as of macOS 10.10 and filtered by SecureEventInput).
 
-def _post_unicode(text: str, down: bool, pid: int | None = None) -> None:
-    """Post a single Unicode-string keyboard event (down or up)."""
-    if not text:
-        return
-    n = len(text.encode("utf-16-le")) // 2
-    event = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
-    if event is None:
-        return
-    Quartz.CGEventKeyboardSetUnicodeString(event, n, text)
-    if pid is not None:
-        # PyObjC's signature is (pid, event) — reversed from the C header.
-        Quartz.CGEventPostToPid(pid, event)
-    else:
-        Quartz.CGEventPost(Quartz.kCGSessionEventTap, event)
-
-
-def _send_unicode(text: str, pid: int | None = None) -> None:
-    _post_unicode(text, True, pid)
-    _post_unicode(text, False, pid)
-
-
-def _secure_input_pid() -> int | None:
-    """Return the PID of the process that currently has secure input
-    (typically loginwindow when the lock screen is showing the password
-    field), or None if no process has secure input.
-
-    We post events directly to this PID because events going through the
-    normal event tap are silently dropped by processes with secure input
-    — which is exactly the case for the lock screen's password field.
+    Exactly one of `keycode` or `unicode` must be provided:
+    - `keycode` for non-character keys (Return, F-keys, etc.)
+    - `unicode` for printable characters (works for any language)
     """
-    session = Quartz.CGSessionCopyCurrentDictionary() or {}
-    return session.get("kCGSSessionSecureInputPID")
+    if keycode is not None:
+        event = Quartz.CGEventCreateKeyboardEvent(None, keycode, down)
+    else:
+        event = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
+    if event is None:
+        return
+    if unicode is not None:
+        n = len(unicode.encode("utf-16-le")) // 2
+        Quartz.CGEventKeyboardSetUnicodeString(event, n, unicode)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
 def type_char(char: str) -> None:
-    """Type a single character, routed around secure input if active."""
-    _send_unicode(char, pid=_secure_input_pid())
+    """Type a single character. Unicode string event (works for any char)."""
+    if char:
+        _post(keycode=None, unicode=char, down=True)
+        _post(keycode=None, unicode=char, down=False)
 
 
 def _press_key(keycode: int) -> None:
-    """Press and release a key (used for non-character keys like Return,
-    F-keys, etc.). Routed around secure input if active."""
-    pid = _secure_input_pid()
-    _post_keycode(keycode, True, pid=pid)
-    _post_keycode(keycode, False, pid=pid)
+    """Press and release a non-character key (Return, F-keys, etc.)."""
+    _post(keycode=keycode, unicode=None, down=True)
+    _post(keycode=keycode, unicode=None, down=False)
 
 
 def type_string(text: str) -> None:
-    """Type a string into the current focus (typically the macOS lock screen).
-
-    Posts directly to the process with secure input (the loginwindow
-    when the screen is locked), bypassing the normal event tap. The
-    secure-input PID is re-resolved per char because the password field
-    can acquire its own secure input mid-typing.
-
-    Note: no wake-key press. F15 / similar no-op keys are commonly bound
-    to global hotkeys (screenshot tools, productivity apps), so pressing
-    them before typing would steal focus away from the password field.
-    """
-    last_pid = _secure_input_pid()
+    """Type a string. Each char is posted as a separate down+up pair."""
     for char in text:
-        pid = _secure_input_pid()
-        if pid != last_pid:
-            last_pid = pid
-        _send_unicode(char, pid=pid)
+        type_char(char)
 
 
 def press_return() -> None:
-    """Press the Return key, routed around secure input if active."""
+    """Press the Return key."""
     _press_key(K_RETURN)
 
 
