@@ -61,7 +61,6 @@ K_SHIFT = 0x38
 K_CAPS_LOCK = 0x39
 K_OPTION = 0x3A
 K_CONTROL = 0x3B
-K_F15 = 0x40
 
 
 UNSHIFTED_KEYCODES = {
@@ -152,15 +151,14 @@ def type_string(text: str) -> None:
     """Type a string into the current focus (typically the macOS lock screen).
 
     Posts directly to the process with secure input (the loginwindow
-    when the screen is locked), bypassing the normal event tap.
+    when the screen is locked), bypassing the normal event tap. The
+    secure-input PID is re-resolved per char because the password field
+    can acquire its own secure input mid-typing.
 
-    Sequence:
-    1. Press F15 (a no-op key) to dismiss any "press a key to wake"
-       screen without typing a character into the password field
-    2. Type each character, re-resolving the secure-input PID per char
-       (the password field can acquire its own secure input mid-typing)
+    Note: no wake-key press. F15 / similar no-op keys are commonly bound
+    to global hotkeys (screenshot tools, productivity apps), so pressing
+    them before typing would steal focus away from the password field.
     """
-    _press_key(K_F15)
     last_pid = _secure_input_pid()
     for char in text:
         pid = _secure_input_pid()

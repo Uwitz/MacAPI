@@ -6,7 +6,6 @@ from typer import (
     K_ANSI_Q,
     K_COMMAND,
     K_CONTROL,
-    K_F15,
     K_RETURN,
     K_ANSI_Q,
     lock_screen,
@@ -58,50 +57,41 @@ def test_type_char_routes_to_secure_input_pid_when_active(mock_quartz):
 # ---------------------------------------------------------------------------
 
 
-def test_type_string_presses_f15_then_chars(mock_quartz):
-    """F15 is the wake key (no-op), then each char is posted."""
+def test_type_string_posts_each_char(mock_quartz):
+    """Each char is posted (down+up = 2 events). No wake key."""
     with patch("typer._secure_input_pid", return_value=None):
         type_string("hi")
-    # F15 down+up (2) + 2 chars × 2 events (down+up) = 6
-    f15_calls = [
-        c for c in mock_quartz.CGEventCreateKeyboardEvent.call_args_list
-        if c.args[1] == K_F15
-    ]
-    assert len(f15_calls) == 2
-    assert _post_count(mock_quartz) == 6
+    # 2 chars × 2 events (down+up) = 4, no PostToPid
+    assert _post_count(mock_quartz) == 4
     assert _to_pid_count(mock_quartz) == 0
 
 
-def test_type_string_empty_just_presses_f15(mock_quartz):
+def test_type_string_empty_does_nothing(mock_quartz):
     with patch("typer._secure_input_pid", return_value=None):
         type_string("")
-    f15_calls = [
-        c for c in mock_quartz.CGEventCreateKeyboardEvent.call_args_list
-        if c.args[1] == K_F15
-    ]
-    assert len(f15_calls) == 2
-    assert _post_count(mock_quartz) == 2
+    assert mock_quartz.CGEventCreateKeyboardEvent.call_count == 0
+    assert _post_count(mock_quartz) == 0
     assert _to_pid_count(mock_quartz) == 0
 
 
 def test_type_string_routes_to_secure_input_pid_when_active(mock_quartz):
     with patch("typer._secure_input_pid", return_value=611):
         type_string("abc")
-    # F15 + 3 chars × 2 events = 8 PostToPid, 0 session-tap
+    # 3 chars × 2 events = 6 PostToPid, 0 session-tap
     assert _post_count(mock_quartz) == 0
-    assert _to_pid_count(mock_quartz) == 8
+    assert _to_pid_count(mock_quartz) == 6
 
 
 def test_type_string_re_resolves_secure_input_pid_per_char(mock_quartz):
     """The secure-input PID can change after the first char (the password
     field acquires its own secure input). Re-resolve per char."""
-    pids = iter([611, 611, 611, 999, 999, 999])
+    pids = iter([611, 611, 999, 999, 999, 999])
     with patch("typer._secure_input_pid", side_effect=lambda: next(pids)):
         type_string("abc")
-    # 8 events: 2 (F15) + 2×3 (chars)
-    assert _to_pid_count(mock_quartz) == 8
+    # 6 events: 2 (a) + 2 (b) + 2 (c) with PID changing from 611 → 999
+    assert _to_pid_count(mock_quartz) == 6
     posted_pids = [c.args[0] for c in mock_quartz.CGEventPostToPid.call_args_list]
-    assert posted_pids == [611, 611, 611, 611, 999, 999, 999, 999]
+    assert posted_pids == [611, 611, 999, 999, 999, 999]
 
 
 # ---------------------------------------------------------------------------
