@@ -27,7 +27,29 @@ set -euo pipefail
 # Paths
 # ---------------------------------------------------------------------------
 
-PROJECT_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+PROJECT_DIR=""
+LAUNCH_AGENT_OPT=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --boot)    LAUNCH_AGENT_OPT="y" ;;
+        --no-boot) LAUNCH_AGENT_OPT="n" ;;
+        -*)
+            echo "Unknown flag: $arg" >&2
+            echo "Usage: $0 [--boot|--no-boot] [project_dir]" >&2
+            exit 1
+            ;;
+        *)
+            PROJECT_DIR="$arg"
+            ;;
+    esac
+done
+
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 USERNAME="$(whoami)"
 HOME_DIR="$HOME"
 APP_SUPPORT="$HOME_DIR/Library/Application Support/MacAPI"
@@ -171,11 +193,33 @@ echo "==> Writing $ENV_FILE (mode 600)"
 chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
-# 6. Generate launchd plist
+# 6. Install LaunchAgent (boot on login) — only if user opts in
 # ---------------------------------------------------------------------------
 
-echo "==> Writing $PLIST_DEST"
-cat > "$PLIST_DEST" <<EOF
+LAUNCH_AGENT_INSTALLED=0
+
+if [[ -z "${LAUNCH_AGENT_OPT:-}" ]]; then
+    echo ""
+    echo "==> Start automatically on login?"
+    echo "    YES  → installs a LaunchAgent so the server runs in the background"
+    echo "           and auto-restarts on login. Recommended for a Mac you control."
+    echo "    NO   → you'll need to run 'uv run main.py' manually (or set this up"
+    echo "           yourself) each time you want the server running."
+    if [[ -f "$PLIST_DEST" ]]; then
+        echo "    NOTE: an existing LaunchAgent is already at $PLIST_DEST"
+    fi
+    read -r -p "    Install LaunchAgent? [Y/n] " REPLY
+    REPLY="${REPLY:-Y}"
+    if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+        LAUNCH_AGENT_OPT="y"
+    else
+        LAUNCH_AGENT_OPT="n"
+    fi
+fi
+
+if [[ "$LAUNCH_AGENT_OPT" == "y" ]]; then
+    echo "==> Writing $PLIST_DEST"
+    cat > "$PLIST_DEST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -222,17 +266,24 @@ cat > "$PLIST_DEST" <<EOF
 </dict>
 </plist>
 EOF
-chmod 644 "$PLIST_DEST"
+    chmod 644 "$PLIST_DEST"
 
-# ---------------------------------------------------------------------------
-# 7. Load the LaunchAgent
-# ---------------------------------------------------------------------------
+    echo "==> Loading LaunchAgent com.user.macapi"
+    launchctl bootout "gui/$(id -u)/com.user.macapi" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null || \
+        launchctl load "$PLIST_DEST" 2>/dev/null || \
+        echo "    (could not load LaunchAgent — load it manually with: launchctl load $PLIST_DEST)"
 
-echo "==> Loading LaunchAgent com.user.macapi"
-launchctl bootout "gui/$(id -u)/com.user.macapi" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null || \
-    launchctl load "$PLIST_DEST" 2>/dev/null || \
-    echo "    (could not load LaunchAgent — load it manually with: launchctl load $PLIST_DEST)"
+    LAUNCH_AGENT_INSTALLED=1
+else
+    echo "==> Skipping LaunchAgent install (you chose not to auto-start on login)"
+    if [[ -f "$PLIST_DEST" ]]; then
+        echo "    Unloading existing LaunchAgent at $PLIST_DEST..."
+        launchctl bootout "gui/$(id -u)/com.user.macapi" 2>/dev/null || true
+        rm -f "$PLIST_DEST"
+        echo "    Removed $PLIST_DEST"
+    fi
+fi
 
 # Give launchd a moment to start it
 sleep 1
@@ -249,17 +300,22 @@ echo "  Config:        $ENV_FILE (mode 600)"
 echo "  Cert:          $CERT_DIR/cert.pem"
 echo "  Key:           $CERT_DIR/key.pem (mode 600)"
 echo "  Logs:          $LOG_DIR/server.log"
-echo "  LaunchAgent:   $PLIST_DEST"
+if [[ "$LAUNCH_AGENT_INSTALLED" == "1" ]]; then
+    echo "  LaunchAgent:   $PLIST_DEST (auto-starts on login)"
+    echo ""
+    echo "  Server is now running in the background and will auto-start on login."
+else
+    echo "  LaunchAgent:   not installed (run 'uv run main.py' manually)"
+    echo ""
+    echo "  To start the server manually: cd $PROJECT_DIR && uv run main.py"
+fi
 echo ""
 echo "  OWNER_TOKEN:   $OWNER_TOKEN"
-echo "                 (paste this into your iOS Shortcut's Authorization header"
-echo "                  and into the JSON body's owner_token field)"
-echo ""
-echo "  Server is now running in the background and will auto-start at login."
+echo "                 (paste this into your iOS Shortcut's Authorization header)"
 echo ""
 echo "  Useful commands:"
 echo "    tail -f $LOG_DIR/server.log     # live logs"
-echo "    launchctl list | grep macapi    # process status"
+echo "    launchctl list | grep macapi    # process status (if LaunchAgent installed)"
 echo "    launchctl kickstart -k gui/\$(id -u)/com.user.macapi   # restart"
 echo "    launchctl bootout gui/\$(id -u)/com.user.macapi        # stop"
 echo "================================================================"
