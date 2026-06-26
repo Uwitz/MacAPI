@@ -63,7 +63,7 @@ K_OPTION = 0x3A
 K_CONTROL = 0x3B
 
 
-UNSHIFTED_KEYCODES = {
+KEYCODES = {
     "a": K_ANSI_A, "b": K_ANSI_B, "c": K_ANSI_C, "d": K_ANSI_D, "e": K_ANSI_E,
     "f": K_ANSI_F, "g": K_ANSI_G, "h": K_ANSI_H, "i": K_ANSI_I, "j": K_ANSI_J,
     "k": K_ANSI_K, "l": K_ANSI_L, "m": K_ANSI_M, "n": K_ANSI_N, "o": K_ANSI_O,
@@ -79,7 +79,13 @@ UNSHIFTED_KEYCODES = {
     "\t": K_TAB,
 }
 
-SHIFTED_CHARS = {
+# A shifted char (e.g. "A") is the unshifted key ("a") with the shift
+# modifier held. We resolve it back to the unshifted base + shift=True.
+SHIFTED = {
+    "A": "a", "B": "b", "C": "c", "D": "d", "E": "e", "F": "f", "G": "g",
+    "H": "h", "I": "i", "J": "j", "K": "k", "L": "l", "M": "m", "N": "n",
+    "O": "o", "P": "p", "Q": "q", "R": "r", "S": "s", "T": "t", "U": "u",
+    "V": "v", "W": "w", "X": "x", "Y": "y", "Z": "z",
     "!": "1", "@": "2", "#": "3", "$": "4", "%": "5",
     "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
     "_": "-", "+": "=",
@@ -89,41 +95,74 @@ SHIFTED_CHARS = {
 }
 
 
-def _post(keycode: int | None, unicode: str | None, down: bool) -> None:
-    """Post a single keyboard event to the HID event tap.
+# One HID source, created once. `kCGEventSourceStateHIDSystemState` is the
+# system hardware source — events created from it are treated like real
+# keyboard events by secure input filters, including the lock screen's
+# password field.
+_HID_SOURCE = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
 
-    Posts to kCGHIDEventTap — the lowest level of the event chain,
-    where real hardware events live. The lock screen's password field
-    accepts events from this tap (it rejects CGEventPostToPid, which
-    is deprecated as of macOS 10.10 and filtered by SecureEventInput).
 
-    Exactly one of `keycode` or `unicode` must be provided:
-    - `keycode` for non-character keys (Return, F-keys, etc.)
-    - `unicode` for printable characters (works for any language)
+def _post(keycode: int, down: bool, shift: bool = False, char: str | None = None) -> None:
+    """Post a single hardware key event (down or up).
+
+    Created from the HID system source so secure input fields accept it
+    as if it came from a real keyboard. The Unicode string is also set
+    on key-down for printable characters, because the lock screen's
+    password field extracts the character from the Unicode string —
+    not from the keycode (it doesn't know the user's keyboard layout).
     """
-    if keycode is not None:
-        event = Quartz.CGEventCreateKeyboardEvent(None, keycode, down)
-    else:
-        event = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
+    event = Quartz.CGEventCreateKeyboardEvent(_HID_SOURCE, keycode, down)
     if event is None:
         return
-    if unicode is not None:
-        n = len(unicode.encode("utf-16-le")) // 2
-        Quartz.CGEventKeyboardSetUnicodeString(event, n, unicode)
+    if shift:
+        # Attach the shift modifier flag directly to the key event, so
+        # the OS sees `Shift + <key>` as a single atomic event. This is
+        # what real keyboards produce and is what secure input requires.
+        existing = Quartz.CGEventGetFlags(event)
+        Quartz.CGEventSetFlags(event, existing | Quartz.kCGEventFlagMaskShift)
+    if char is not None and down:
+        n = len(char.encode("utf-16-le")) // 2
+        Quartz.CGEventKeyboardSetUnicodeString(event, n, char)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+
+def _post_unicode_fallback(char: str) -> None:
+    """For chars that have no keycode (e.g. accented letters, emoji),
+    use a Unicode string event as a fallback."""
+    event = Quartz.CGEventCreateKeyboardEvent(_HID_SOURCE, 0, True)
+    if event is None:
+        return
+    n = len(char.encode("utf-16-le")) // 2
+    Quartz.CGEventKeyboardSetUnicodeString(event, n, char)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+    event_up = Quartz.CGEventCreateKeyboardEvent(_HID_SOURCE, 0, False)
+    if event_up is None:
+        return
+    Quartz.CGEventKeyboardSetUnicodeString(event_up, n, char)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
 def type_char(char: str) -> None:
-    """Type a single character. Unicode string event (works for any char)."""
-    if char:
-        _post(keycode=None, unicode=char, down=True)
-        _post(keycode=None, unicode=char, down=False)
+    """Type a single character. Posts keycode + Unicode string so the
+    lock screen's password field receives the character directly,
+    independent of keyboard layout."""
+    if not char:
+        return
+    if char in KEYCODES:
+        _post(KEYCODES[char], True, char=char)
+        _post(KEYCODES[char], False)
+    elif char in SHIFTED:
+        base = SHIFTED[char]
+        _post(KEYCODES[base], True, shift=True, char=char)
+        _post(KEYCODES[base], False, shift=True)
+    else:
+        _post_unicode_fallback(char)
 
 
 def _press_key(keycode: int) -> None:
     """Press and release a non-character key (Return, F-keys, etc.)."""
-    _post(keycode=keycode, unicode=None, down=True)
-    _post(keycode=keycode, unicode=None, down=False)
+    _post(keycode, True)
+    _post(keycode, False)
 
 
 def type_string(text: str) -> None:
@@ -150,9 +189,9 @@ def lock_screen() -> None:
         Quartz.kCGEventFlagMaskControl
         | Quartz.kCGEventFlagMaskCommand
     )
-    event_down = Quartz.CGEventCreateKeyboardEvent(None, K_ANSI_Q, True)
+    event_down = Quartz.CGEventCreateKeyboardEvent(_HID_SOURCE, K_ANSI_Q, True)
     Quartz.CGEventSetFlags(event_down, flags)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_down)
-    event_up = Quartz.CGEventCreateKeyboardEvent(None, K_ANSI_Q, False)
+    event_up = Quartz.CGEventCreateKeyboardEvent(_HID_SOURCE, K_ANSI_Q, False)
     Quartz.CGEventSetFlags(event_up, flags)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)
