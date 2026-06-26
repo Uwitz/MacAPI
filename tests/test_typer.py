@@ -17,6 +17,12 @@ from typer import (
 @pytest.fixture
 def mock_quartz():
     with patch("typer.Quartz") as mock:
+        # Real integer values for flag constants so bitwise & works
+        # correctly in tests. Source: Carbon/HIToolbox/Events.h
+        mock.kCGEventFlagMaskShift = 1 << 17        # 0x20000
+        mock.kCGEventFlagMaskControl = 1 << 18      # 0x40000
+        mock.kCGEventFlagMaskAlternate = 1 << 19    # 0x80000
+        mock.kCGEventFlagMaskCommand = 1 << 20      # 0x100000
         yield mock
 
 
@@ -34,6 +40,36 @@ def test_type_char_posts_down_and_up_to_hid_tap(mock_quartz):
     assert _post_count(mock_quartz) == 2
     for call in mock_quartz.CGEventPost.call_args_list:
         assert call.args[0] == mock_quartz.kCGHIDEventTap
+
+
+def test_type_char_replaces_flags_not_ors_with_existing(mock_quartz):
+    """If the HID source carries stale Cmd/Control in its state, our
+    events must not inherit it. A "3" key event with Cmd+Shift would
+    be interpreted as Cmd+Shift+3 → full-screen screenshot."""
+    # Simulate the HID source having Cmd held (e.g. user just pressed Cmd+Tab).
+    mock_quartz.CGEventGetFlags.return_value = mock_quartz.kCGEventFlagMaskCommand
+    type_char("!")
+    # "!" is shift+1 — we must set the flag to Shift only, not Cmd|Shift.
+    set_calls = mock_quartz.CGEventSetFlags.call_args_list
+    for call in set_calls:
+        flags = call.args[1]
+        assert not (flags & mock_quartz.kCGEventFlagMaskCommand)
+        assert not (flags & mock_quartz.kCGEventFlagMaskControl)
+        assert not (flags & mock_quartz.kCGEventFlagMaskAlternate)
+
+
+def test_type_char_no_shift_sets_no_flags(mock_quartz):
+    mock_quartz.CGEventGetFlags.return_value = 0
+    type_char("a")
+    for call in mock_quartz.CGEventSetFlags.call_args_list:
+        assert call.args[1] == 0
+
+
+def test_type_char_shift_sets_shift_flag(mock_quartz):
+    mock_quartz.CGEventGetFlags.return_value = 0
+    type_char("A")
+    for call in mock_quartz.CGEventSetFlags.call_args_list:
+        assert call.args[1] & mock_quartz.kCGEventFlagMaskShift
 
 
 def test_type_char_sets_unicode_string(mock_quartz):

@@ -110,16 +110,20 @@ def _post(keycode: int, down: bool, shift: bool = False, char: str | None = None
     on key-down for printable characters, because the lock screen's
     password field extracts the character from the Unicode string —
     not from the keycode (it doesn't know the user's keyboard layout).
+
+    Modifier flags are REPLACED (not OR-ed with existing). The HID
+    system source carries whatever modifier state the hardware
+    keyboard has right now — if the user was just holding Cmd (Cmd+Tab,
+    Cmd+Space, etc.), that state is in the source and would be inherited
+    by our events. A "3" key event with Cmd+Shift would be interpreted
+    as Cmd+Shift+3 → full-screen screenshot. Replacing the flags outright
+    ensures our events have only the modifiers we explicitly want.
     """
     event = Quartz.CGEventCreateKeyboardEvent(_HID_SOURCE, keycode, down)
     if event is None:
         return
-    if shift:
-        # Attach the shift modifier flag directly to the key event, so
-        # the OS sees `Shift + <key>` as a single atomic event. This is
-        # what real keyboards produce and is what secure input requires.
-        existing = Quartz.CGEventGetFlags(event)
-        Quartz.CGEventSetFlags(event, existing | Quartz.kCGEventFlagMaskShift)
+    flags = Quartz.kCGEventFlagMaskShift if shift else 0
+    Quartz.CGEventSetFlags(event, flags)
     if char is not None and down:
         n = len(char.encode("utf-16-le")) // 2
         Quartz.CGEventKeyboardSetUnicodeString(event, n, char)
