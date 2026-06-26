@@ -1,5 +1,3 @@
-import time
-
 import Quartz
 
 
@@ -63,6 +61,7 @@ K_SHIFT = 0x38
 K_CAPS_LOCK = 0x39
 K_OPTION = 0x3A
 K_CONTROL = 0x3B
+K_F15 = 0x40
 
 
 UNSHIFTED_KEYCODES = {
@@ -91,7 +90,7 @@ SHIFTED_CHARS = {
 }
 
 
-def _send_key(keycode: int, down: bool, pid: int | None = None) -> None:
+def _post_keycode(keycode: int, down: bool, pid: int | None = None) -> None:
     event = Quartz.CGEventCreateKeyboardEvent(None, keycode, down)
     if event is None:
         return
@@ -119,10 +118,7 @@ def _post_unicode(text: str, down: bool, pid: int | None = None) -> None:
 
 
 def _send_unicode(text: str, pid: int | None = None) -> None:
-    if not text:
-        return
     _post_unicode(text, True, pid)
-    time.sleep(0.02)
     _post_unicode(text, False, pid)
 
 
@@ -148,54 +144,29 @@ def _press_key(keycode: int) -> None:
     """Press and release a key (used for non-character keys like Return,
     F-keys, etc.). Routed around secure input if active."""
     pid = _secure_input_pid()
-    _send_key(keycode, True, pid=pid)
-    time.sleep(0.02)
-    _send_key(keycode, False, pid=pid)
+    _post_keycode(keycode, True, pid=pid)
+    _post_keycode(keycode, False, pid=pid)
 
 
 def type_string(text: str) -> None:
     """Type a string into the current focus (typically the macOS lock screen).
 
     Posts directly to the process with secure input (the loginwindow
-    when the screen is locked), bypassing the normal event tap that
-    would otherwise be blocked.
+    when the screen is locked), bypassing the normal event tap.
 
     Sequence:
-    1. 200ms settle
-    2. Press F15 (no-op key, but wakes the screen if in "press a key
-       to wake" state)
-    3. 1 second wait for the password field to become active
-    4. Type each character with 50ms between them, routed around
-       secure input
-    5. 150ms settle
+    1. Press F15 (a no-op key) to dismiss any "press a key to wake"
+       screen without typing a character into the password field
+    2. Type each character, re-resolving the secure-input PID per char
+       (the password field can acquire its own secure input mid-typing)
     """
-    import sys
-    print(f"[typer] type_string starting ({len(text)} chars)", file=sys.stderr, flush=True)
-    time.sleep(0.2)
-
-    print("[typer] sending F15 to wake lock screen", file=sys.stderr, flush=True)
-    _press_key(0x40)
-    time.sleep(1.0)
-
-    pid = _secure_input_pid()
-    print(f"[typer] secure input pid (pre-type): {pid}", file=sys.stderr, flush=True)
-
-    print("[typer] typing password chars", file=sys.stderr, flush=True)
-    last_pid = pid
-    for i, char in enumerate(text):
-        # Re-resolve every char — the secure-input PID can change
-        # (typically from loginwindow → the field's own owner) after
-        # the first keypress activates the password field.
+    _press_key(K_F15)
+    last_pid = _secure_input_pid()
+    for char in text:
         pid = _secure_input_pid()
         if pid != last_pid:
-            print(f"[typer]   secure input pid changed: {last_pid} -> {pid}", file=sys.stderr, flush=True)
             last_pid = pid
         _send_unicode(char, pid=pid)
-        if i % 4 == 0:
-            print(f"[typer]   posted char {i+1}/{len(text)}: {char!r} -> pid {pid}", file=sys.stderr, flush=True)
-        time.sleep(0.05)
-    time.sleep(0.15)
-    print("[typer] type_string done", file=sys.stderr, flush=True)
 
 
 def press_return() -> None:
@@ -212,8 +183,6 @@ def lock_screen() -> None:
     any of the events — the key + its modifiers are a single atomic
     event from the WindowServer's perspective.
     """
-    import sys
-    print("[lock] sending Ctrl+Cmd+Q (atomic modifier+key event)", file=sys.stderr, flush=True)
     flags = (
         Quartz.kCGEventFlagMaskControl
         | Quartz.kCGEventFlagMaskCommand
@@ -221,7 +190,6 @@ def lock_screen() -> None:
     event_down = Quartz.CGEventCreateKeyboardEvent(None, K_ANSI_Q, True)
     Quartz.CGEventSetFlags(event_down, flags)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_down)
-    time.sleep(0.05)
     event_up = Quartz.CGEventCreateKeyboardEvent(None, K_ANSI_Q, False)
     Quartz.CGEventSetFlags(event_up, flags)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)
