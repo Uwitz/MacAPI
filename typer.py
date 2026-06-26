@@ -91,51 +91,116 @@ SHIFTED_CHARS = {
 }
 
 
-def _send_key(keycode: int, down: bool) -> None:
+def _send_key(keycode: int, down: bool, pid: int | None = None) -> None:
     event = Quartz.CGEventCreateKeyboardEvent(None, keycode, down)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+    if event is None:
+        return
+    if pid is not None:
+        # PyObjC's signature is (pid, event) — reversed from the C header.
+        Quartz.CGEventPostToPid(pid, event)
+    else:
+        Quartz.CGEventPost(Quartz.kCGSessionEventTap, event)
 
 
-def _send_unicode(text: str) -> None:
-    """Type a string using the Unicode string API — layout-independent.
-
-    Sends the actual Unicode characters to the keyboard event tap, so the
-    OS's keyboard layout maps them to the right keycodes. Works for any
-    character the active layout can produce (including accented letters,
-    symbols, etc.) and doesn't suffer from the dropped-character problem
-    that hits per-keystroke posting on the macOS lock screen.
-    """
+def _post_unicode(text: str, down: bool, pid: int | None = None) -> None:
+    """Post a single Unicode-string keyboard event (down or up)."""
     if not text:
         return
     n = len(text.encode("utf-16-le")) // 2
-    event = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
+    event = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
+    if event is None:
+        return
     Quartz.CGEventKeyboardSetUnicodeString(event, n, text)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-    event_up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
-    Quartz.CGEventKeyboardSetUnicodeString(event_up, n, text)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)
+    if pid is not None:
+        # PyObjC's signature is (pid, event) — reversed from the C header.
+        Quartz.CGEventPostToPid(pid, event)
+    else:
+        Quartz.CGEventPost(Quartz.kCGSessionEventTap, event)
+
+
+def _send_unicode(text: str, pid: int | None = None) -> None:
+    if not text:
+        return
+    _post_unicode(text, True, pid)
+    time.sleep(0.02)
+    _post_unicode(text, False, pid)
+
+
+def _secure_input_pid() -> int | None:
+    """Return the PID of the process that currently has secure input
+    (typically loginwindow when the lock screen is showing the password
+    field), or None if no process has secure input.
+
+    We post events directly to this PID because events going through the
+    normal event tap are silently dropped by processes with secure input
+    — which is exactly the case for the lock screen's password field.
+    """
+    session = Quartz.CGSessionCopyCurrentDictionary() or {}
+    return session.get("kCGSSessionSecureInputPID")
 
 
 def type_char(char: str) -> None:
-    """Type a single character using the Unicode string API."""
-    _send_unicode(char)
+    """Type a single character, routed around secure input if active."""
+    _send_unicode(char, pid=_secure_input_pid())
+
+
+def _press_key(keycode: int) -> None:
+    """Press and release a key (used for non-character keys like Return,
+    F-keys, etc.). Routed around secure input if active."""
+    pid = _secure_input_pid()
+    _send_key(keycode, True, pid=pid)
+    time.sleep(0.02)
+    _send_key(keycode, False, pid=pid)
 
 
 def type_string(text: str) -> None:
-    """Type a string using Quartz Unicode keyboard events.
+    """Type a string into the current focus (typically the macOS lock screen).
 
-    The whole string goes in one event (no per-char dropouts). Minimal
-    settle delays before/after for the lock screen to register input.
+    Posts directly to the process with secure input (the loginwindow
+    when the screen is locked), bypassing the normal event tap that
+    would otherwise be blocked.
+
+    Sequence:
+    1. 200ms settle
+    2. Press F15 (no-op key, but wakes the screen if in "press a key
+       to wake" state)
+    3. 1 second wait for the password field to become active
+    4. Type each character with 50ms between them, routed around
+       secure input
+    5. 150ms settle
     """
-    time.sleep(0.03)
-    _send_unicode(text)
-    time.sleep(0.03)
+    import sys
+    print(f"[typer] type_string starting ({len(text)} chars)", file=sys.stderr, flush=True)
+    time.sleep(0.2)
+
+    print("[typer] sending F15 to wake lock screen", file=sys.stderr, flush=True)
+    _press_key(0x40)
+    time.sleep(1.0)
+
+    pid = _secure_input_pid()
+    print(f"[typer] secure input pid (pre-type): {pid}", file=sys.stderr, flush=True)
+
+    print("[typer] typing password chars", file=sys.stderr, flush=True)
+    last_pid = pid
+    for i, char in enumerate(text):
+        # Re-resolve every char — the secure-input PID can change
+        # (typically from loginwindow → the field's own owner) after
+        # the first keypress activates the password field.
+        pid = _secure_input_pid()
+        if pid != last_pid:
+            print(f"[typer]   secure input pid changed: {last_pid} -> {pid}", file=sys.stderr, flush=True)
+            last_pid = pid
+        _send_unicode(char, pid=pid)
+        if i % 4 == 0:
+            print(f"[typer]   posted char {i+1}/{len(text)}: {char!r} -> pid {pid}", file=sys.stderr, flush=True)
+        time.sleep(0.05)
+    time.sleep(0.15)
+    print("[typer] type_string done", file=sys.stderr, flush=True)
 
 
 def press_return() -> None:
-    """Press the Return key."""
-    _send_key(K_RETURN, True)
-    _send_key(K_RETURN, False)
+    """Press the Return key, routed around secure input if active."""
+    _press_key(K_RETURN)
 
 
 def lock_screen() -> None:

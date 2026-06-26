@@ -89,7 +89,14 @@ def _is_screen_locked() -> bool:
 
 
 def _type_password(password: str) -> None:
-    if _is_screen_locked():
+    import sys
+    locked = _is_screen_locked()
+    session = Quartz.CGSessionCopyCurrentDictionary() or {}
+    print(
+        f"[type] screen_locked={locked} session={dict(session)} typing={len(password)} chars",
+        file=sys.stderr, flush=True,
+    )
+    if locked:
         type_string(password)
         press_return()
 
