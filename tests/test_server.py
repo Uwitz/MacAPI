@@ -70,6 +70,50 @@ def test_lock_with_auth(client):
 
 
 # ---------------------------------------------------------------------------
+# /poweroff
+# ---------------------------------------------------------------------------
+
+
+def test_poweroff_requires_auth(client):
+    r = client.post("/poweroff")
+    assert r.status_code == 401
+
+
+def test_poweroff_rejects_wrong_authorization(client):
+    r = client.post("/poweroff", headers={"Authorization": "wrong"})
+    assert r.status_code == 401
+
+
+def test_poweroff_with_auth_spawns_shutdown(client):
+    with patch("main.subprocess.Popen") as mock_popen:
+        r = client.post("/poweroff", headers={"Authorization": TOKEN})
+    assert r.status_code == 200
+    assert r.json() == {"status": "shutting down"}
+    mock_popen.assert_called_once()
+    args = mock_popen.call_args.args[0]
+    assert args == ["sudo", "/sbin/shutdown", "-h", "now"]
+
+
+def test_poweroff_spawns_detached(client):
+    """The shutdown command must be spawned with start_new_session so it
+    survives the server process being killed by launchd on shutdown."""
+    with patch("main.subprocess.Popen") as mock_popen:
+        client.post("/poweroff", headers={"Authorization": TOKEN})
+    assert mock_popen.call_args.kwargs.get("start_new_session") is True
+
+
+def test_poweroff_redirects_stdio_to_devnull(client):
+    """The shutdown command runs detached — we don't want it writing to
+    the server's stdout/stderr/stdin."""
+    with patch("main.subprocess.Popen") as mock_popen:
+        client.post("/poweroff", headers={"Authorization": TOKEN})
+    kwargs = mock_popen.call_args.kwargs
+    assert kwargs["stdout"] is __import__("subprocess").DEVNULL
+    assert kwargs["stderr"] is __import__("subprocess").DEVNULL
+    assert kwargs["stdin"] is __import__("subprocess").DEVNULL
+
+
+# ---------------------------------------------------------------------------
 # /unlock: Authorization header
 # ---------------------------------------------------------------------------
 

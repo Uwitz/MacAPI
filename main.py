@@ -1,6 +1,7 @@
 import os
 import secrets
 import ssl
+import subprocess
 import sys
 import time
 
@@ -208,6 +209,38 @@ async def _unlock_envelope(body: dict) -> dict:
             zeroize(password_buf)
 
     return {"status": "unlocked", "mode": "envelope"}
+
+
+@app.post("/poweroff")
+async def poweroff(request: Request):
+    """Immediately shut down the Mac.
+
+    For BFU (Before First Unlock) mode on a FileVault-protected Mac:
+    - All RAM contents are lost on power-off, including FileVault keys
+    - The disk remains fully encrypted at rest
+    - Next boot requires the FileVault password before any user data
+      is accessible, even with physical access to the device
+
+    Requires:
+    - OWNER_TOKEN auth (same as /lock and /unlock)
+    - The user running the server to have NOPASSWD sudo on
+      /sbin/shutdown (configured by setup.sh)
+
+    The shutdown command is spawned detached so this request returns
+    200 before the OS terminates the server process.
+    """
+    if request.headers.get("Authorization") != _owner_token():
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    import sys
+    print(f"[poweroff] authorized request from {request.client.host}", file=sys.stderr, flush=True)
+    subprocess.Popen(
+        ["sudo", "/sbin/shutdown", "-h", "now"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {"status": "shutting down"}
 
 
 def _first_run() -> None:

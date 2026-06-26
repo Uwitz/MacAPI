@@ -193,7 +193,44 @@ echo "==> Writing $ENV_FILE (mode 600)"
 chmod 600 "$ENV_FILE"
 
 # ---------------------------------------------------------------------------
-# 6. Install LaunchAgent (boot on login) — only if user opts in
+# 6. Poweroff capability — NOPASSWD sudoers rule for /sbin/shutdown
+# ---------------------------------------------------------------------------
+
+SUDOERS_FILE="/etc/sudoers.d/macapi-poweroff"
+SUDOERS_RULE="$USERNAME ALL=(ALL) NOPASSWD: /sbin/shutdown -h now"
+
+if [[ -f "$SUDOERS_FILE" ]] && grep -qF "$SUDOERS_RULE" "$SUDOERS_FILE" 2>/dev/null; then
+    echo "==> Sudoers rule already installed at $SUDOERS_FILE"
+else
+    echo ""
+    echo "==> Allow the /poweroff endpoint to shut down the Mac?"
+    echo "    This installs a NOPASSWD sudoers rule so the server can run"
+    echo "    'sudo /sbin/shutdown -h now' without prompting for a password."
+    echo "    The rule is scoped to ONLY that one command — no other sudo access."
+    echo "    File: $SUDOERS_FILE (mode 0440, owned by root)"
+    if [[ -f "$SUDOERS_FILE" ]]; then
+        echo "    NOTE: existing file at $SUDOERS_FILE will be replaced"
+    fi
+    read -r -p "    Install sudoers rule? [Y/n] " REPLY
+    REPLY="${REPLY:-Y}"
+    if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+        TMP_RULE="$(mktemp)"
+        printf '%s\n' "$SUDOERS_RULE" > "$TMP_RULE"
+        if sudo cp "$TMP_RULE" "$SUDOERS_FILE" && sudo chmod 0440 "$SUDOERS_FILE" && sudo chown root:wheel "$SUDOERS_FILE"; then
+            echo "==> Installed $SUDOERS_FILE"
+        else
+            echo "ERROR: failed to install sudoers rule" >&2
+            rm -f "$TMP_RULE"
+            exit 1
+        fi
+        rm -f "$TMP_RULE"
+    else
+        echo "==> Skipping sudoers install — /poweroff endpoint will not work"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Install LaunchAgent (boot on login) — only if user opts in
 # ---------------------------------------------------------------------------
 
 LAUNCH_AGENT_INSTALLED=0
@@ -308,6 +345,11 @@ else
     echo "  LaunchAgent:   not installed (run 'uv run main.py' manually)"
     echo ""
     echo "  To start the server manually: cd $PROJECT_DIR && uv run main.py"
+fi
+if [[ -f "$SUDOERS_FILE" ]] && grep -qF "$SUDOERS_RULE" "$SUDOERS_FILE" 2>/dev/null; then
+    echo "  Poweroff:      enabled (NOPASSWD sudoers rule at $SUDOERS_FILE)"
+else
+    echo "  Poweroff:      not enabled (run setup.sh to install sudoers rule)"
 fi
 echo ""
 echo "  OWNER_TOKEN:   $OWNER_TOKEN"
