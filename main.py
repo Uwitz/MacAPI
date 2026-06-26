@@ -211,10 +211,27 @@ async def _unlock_envelope(body: dict) -> dict:
 
 
 def _first_run() -> None:
+    # If we're running with explicit env vars (e.g., from a LaunchAgent),
+    # the .env file is optional — only used for first-run secret generation.
+    has_token = bool(os.getenv("OWNER_TOKEN"))
+    has_hash = bool(os.getenv("PASSWORD_HASH"))
+    has_cert = os.path.exists(TLS_CERT_PATH) and os.path.exists(TLS_KEY_PATH)
+    if has_token and has_hash and has_cert:
+        return  # nothing to bootstrap
+
+    # Some secrets are missing — we need a writable .env to bootstrap.
     env_path = find_dotenv()
     if not env_path:
+        missing = []
+        if not has_token:
+            missing.append("OWNER_TOKEN")
+        if not has_hash:
+            missing.append("PASSWORD_HASH")
+        if not has_cert:
+            missing.append(f"cert at {TLS_CERT_PATH}")
         print(
-            "ERROR: No .env file found. Create one (e.g. `touch .env`) and run again.",
+            f"ERROR: missing {', '.join(missing)}. "
+            "Set them in the environment or run setup.sh to generate a .env.",
             file=sys.stderr,
         )
         sys.exit(1)
