@@ -231,3 +231,16 @@ certs/
 /has
 /run
 /to
+
+# --- Uwitz SSH credentials ---
+.uwz/
+
+# --- Cryptographic key material (never commit) ---
+**/keys/
+*.pem
+*.key
+*.p12
+*.pfx
+*.asc
+*.gpg
+*.age
