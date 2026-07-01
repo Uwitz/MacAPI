@@ -1,75 +1,103 @@
 # MacAPI
 
-A background API on your Mac that lets an iOS Shortcut remotely **lock** and **unlock** the screen. The connection is **TLS 1.3 with AES-256-GCM** end-to-end (quantum-resistant bulk encryption), authenticated with an **Ed25519** self-signed cert that the iPhone pins, and the password is **hash-verified** before being typed via Quartz `CGEventCreateKeyboardEvent`.
+> Lock and unlock your Mac from your iPhone. End-to-end encrypted. Zero plaintext on the wire. Cloudflare never sees your password.
 
-The Mac is exposed to the internet via a **Cloudflare Tunnel in TCP mode**, so Cloudflare acts as a transparent byte forwarder — **Cloudflare never sees the password in plaintext**.
+A hardened FastAPI server that exposes three endpoints — `/lock`, `/unlock`, `/poweroff` — protected by `OWNER_TOKEN` bearer auth, SHA-256 password verification, and TLS 1.3 with AES-256-GCM terminated on the Mac, not at the edge.
 
-## Architecture
+---
+
+## How it works
 
 ```
-┌──────────────────┐                              ┌──────────────────┐
-│   iOS Shortcut   │                              │      Mac         │
-│                  │                              │                  │
-│  ┌────────────┐  │   TLS 1.3 / AES-256-GCM      │ ┌──────────────┐ │
-│  │  password  │──┼────────(encrypted)──────────┼─▶│  uvicorn     │ │
-│  │            │  │                              │ │  Ed25519 cert│ │
-│  │ owner_token│  │                              │ │  TLS 1.3     │ │
-│  └────────────┘  │                              │ │  AES-256-GCM │ │
-└──────────────────┘                              │ └──────┬───────┘ │
-        │                                         │        │         │
-        │  iPhone pins Mac's cert SHA-256         │ ┌──────▼───────┐ │
-        │                                         │ │ SHA-256 hash │ │
-        │                                         │ │   check      │ │
-        │  Cloudflare edge (TCP forwarder)        │ └──────┬───────┘ │
-        ▼                                         │        │         │
-┌──────────────────┐                              │ ┌──────▼───────┐ │
-│  Cloudflare edge │─── raw TCP bytes ────────────│ │  Quartz      │ │
-│  (sees only      │   (still encrypted)          │ │  CGEventPost │ │
-│   ciphertext)    │                              │ └──────────────┘ │
-└──────────────────┘                              └──────────────────┘
+iPhone                   Cloudflare (TCP)              Mac
+──────                   ────────────────              ───
+iOS Shortcut
+  │ password (TLS 1.3)
+  │ AES-256-GCM ────────► raw bytes ─────────────────► uvicorn
+  │ OWNER_TOKEN                                           │
+  │                       (sees ciphertext only)         │ SHA-256 hash check
+  │                                                      │ (constant-time)
+  │                                                      │
+  │                                                      ▼
+  │                                               Quartz CGEventPost
+  │                                               ─────────────────
+  │                                               types password into
+  └───────────────────────────────────────────── lock screen
 ```
 
-## Security properties
+Cloudflare runs in **TCP tunnel mode** — it forwards raw bytes without terminating TLS. The TLS 1.3 session is end-to-end between the iPhone and the Mac. Cloudflare can see packet sizes and timing, not the password.
 
-| Layer | Property | Notes |
-|---|---|---|
-| **In transit (iPhone → Cloudflare → Mac)** | TLS 1.3, AES-256-GCM | End-to-end. Cloudflare is a transparent byte forwarder (TCP tunnel mode), cannot decrypt. ~128-bit post-quantum under Grover. |
-| **Authentication** | `Authorization: <OWNER_TOKEN>` header | Required on `/lock` and `/unlock`. |
-| **Password verification** | SHA-256 hash in `.env` (constant-time compare) | Wrong password → 401, no typing attempted. |
-| **On Mac (after TLS terminates)** | Password in memory briefly, typed via Quartz | No `osascript`, no `argv`, no `ps` exposure. |
-| **At rest (OWNER_TOKEN, PASSWORD_HASH)** | `.env` (mode 0600) | 32-byte url-safe token, SHA-256 hash. |
+---
 
-### What this does **not** protect against
+## Security model
 
-- **A compromised iPhone** that has both the OWNER_TOKEN and can reach the tunnel can unlock the Mac.
-- **A compromised Mac user account** — anyone with the user's session can read `.env` and the cert.
-- **Replay within 60 seconds** (for envelope mode) — the timestamp is checked but a network attacker who captures and replays within the window gets one free unlock. For Option B (plaintext) the OWNER_TOKEN + password hash check is the only defense.
+| Layer | Mechanism |
+|---|---|
+| Transport | TLS 1.3 · AES-256-GCM · ECDHE forward secrecy · Ed25519 server cert |
+| Endpoint auth | `Authorization: <OWNER_TOKEN>` header (32-byte url-safe random) |
+| Password guard | SHA-256 hash stored in `.env` · constant-time compare · 401 on mismatch, no typing |
+| Keychain | 32-byte `SHARED_SECRET` in macOS Keychain (envelope mode) · never touches shell or `argv` |
+| Memory hygiene | Decrypted password held in a `bytearray`, zeroed immediately after typing |
+| Cert pinning | iPhone pins the Mac cert's SHA-256 fingerprint · MITM impossible without the key |
+| Replay | 60-second timestamp window in envelope mode |
+| BFU poweroff | `/poweroff` triggers `sudo shutdown -h now` · FileVault keys lost from RAM |
+
+### What this does not protect against
+
+- A compromised iPhone that holds both `OWNER_TOKEN` and the Mac password
+- A compromised Mac user session (can read `.env` and the cert)
+- Replay within 60 s in envelope mode (an active network attacker capturing a request gets one window)
+
+---
+
+## Endpoints
+
+| Method | Path | Auth | Effect |
+|---|---|---|---|
+| `GET` | `/` | none | health check — returns `MacAPI is online` |
+| `GET` | `/lock` | `OWNER_TOKEN` | locks screen via Ctrl+Cmd+Q |
+| `POST` | `/unlock` | `OWNER_TOKEN` + password | verifies password hash, then types via Quartz |
+| `POST` | `/poweroff` | `OWNER_TOKEN` | `sudo shutdown -h now` — BFU mode, FileVault keys wiped |
+
+### `/unlock` body
+
+Plaintext mode (password over TLS):
+```json
+{ "password": "your-mac-password" }
+```
+
+Envelope mode (AES-256-GCM encrypted with `SHARED_SECRET`):
+```json
+{ "ct": "<base64(nonce || ciphertext || tag)>", "ts": 1719876543.0 }
+```
+
+---
 
 ## Setup
 
 ### 1. Install dependencies
 
 ```bash
-cd /Users/snyco/Github/MacAPI
+cd MacAPI
 touch .env
 uv sync
 ```
 
-### 2. First run — generates OWNER_TOKEN, Ed25519 cert, prompts for Mac password
+### 2. First run
 
 ```bash
-uv run main.py
+uv run python main.py
 ```
 
-The first run will:
-1. Generate `OWNER_TOKEN` (32-byte url-safe) → write to `.env`
-2. Generate an **Ed25519** self-signed cert at `certs/cert.pem` + key at `certs/key.pem` (mode `0600`)
-3. **Prompt you for the Mac login password** (input is hidden). The password is SHA-256 hashed and stored as `PASSWORD_HASH` in `.env`. The plaintext is never written to disk.
-4. Print the cert's SHA-256 fingerprint — **this is what you pin in the iOS Shortcut**.
+Generates on first run:
+- `OWNER_TOKEN` (32-byte url-safe) → `.env`
+- Ed25519 self-signed TLS cert → `certs/cert.pem` + `certs/key.pem` (mode `0600`)
+- Prompts for Mac login password, stores SHA-256 hash in `.env` (plaintext never written to disk)
+- Prints the cert's SHA-256 fingerprint — **pin this in your iOS Shortcut**
 
-The server listens on `0.0.0.0:2201` with TLS 1.3 + AES-256-GCM only. OWNER_TOKEN, PASSWORD_HASH, and the cert persist across restarts.
+Server listens on `0.0.0.0:2201` with TLS 1.3 and AES-256-GCM ciphers only.
 
-### 3. Install Cloudflare Tunnel
+### 3. Cloudflare Tunnel (TCP mode)
 
 ```bash
 brew install cloudflared
@@ -77,12 +105,9 @@ cloudflared tunnel login
 cloudflared tunnel create macapi
 ```
 
-### 4. Configure the tunnel — TCP mode (not HTTP!)
-
-Edit `~/.cloudflared/config.yml`:
-
+`~/.cloudflared/config.yml`:
 ```yaml
-tunnel: <TUNNEL_ID>            # from `cloudflared tunnel create` output
+tunnel: <TUNNEL_ID>
 credentials-file: /Users/<you>/.cloudflared/<TUNNEL_ID>.json
 
 ingress:
@@ -91,105 +116,98 @@ ingress:
   - service: http_status:404
 ```
 
-Then route DNS:
-
 ```bash
 cloudflared tunnel route dns macapi macapi.example.com
-```
-
-**Why TCP, not HTTPS:** In HTTPS mode, Cloudflare terminates TLS at the edge and sees your password in plaintext. In TCP mode, Cloudflare just forwards the raw encrypted bytes — the TLS connection is end-to-end between the iPhone and the Mac. Cloudflare can see packet sizes and timing metadata but not the contents.
-
-### 5. Run the tunnel
-
-```bash
 cloudflared tunnel run macapi
 ```
 
-Or as a launchd service:
+Use `tcp://` not `https://`. HTTPS mode terminates TLS at the Cloudflare edge and exposes your password. TCP mode is a transparent byte forwarder.
 
-```bash
-sudo cloudflared service install
-```
+### 4. iOS Shortcut
 
-## iOS Shortcut — build steps
-
-The iPhone has to trust the Mac's Ed25519 cert. There are two ways; **pinning the SHA-256 fingerprint in the Shortcut is preferred** because it survives cert rotation as long as you re-pin.
-
-### How to pin the cert fingerprint in the Shortcut
-
-iOS Shortcuts has no built-in "pin cert fingerprint" field, but you can do it with a small **"If" check** against the response. The trick: after the cert is generated, the Mac prints its SHA-256. You hardcode that as a Text constant in the Shortcut, then use the **"Get Contents of URL" → Advanced → "Headers" + a follow-up "If"** step. Concrete flow:
-
-| # | Action | Settings |
+| # | Action | Setting |
 |---|---|---|
-| 1 | **Text** | Value: `<OWNER_TOKEN>` (the token from your `.env`) |
-| 2 | **Ask for Input** | Prompt: `Mac Password` · Input type: Text |
-| 3 | **Dictionary** | Add row: Key `owner_token` (Text) · Value: Text from step 1. Add row: Key `password` (Text) · Value: Shortcut Input from step 2. |
-| 4 | **Get Contents of URL** | URL: `https://<your-tunnel-hostname>/unlock` · Method: **POST** · Headers: `Authorization: <OWNER_TOKEN>`, `Content-Type: application/json` · Request Body: **JSON** = dictionary from step 3 |
-| 5 | **Show Result** *(optional)* | Shows the response |
+| 1 | **Text** | `<OWNER_TOKEN>` |
+| 2 | **Ask for Input** | Prompt: `Mac Password` · Type: Text |
+| 3 | **Dictionary** | `password` → Input from step 2 |
+| 4 | **Get Contents of URL** | `https://macapi.example.com/unlock` · POST · Header `Authorization: <token>` · Body: JSON from step 3 |
 
-If you want to be extra safe, add an "If" step that aborts the Shortcut if the response body doesn't contain `unlocked`. iOS Shortcuts can compare against the expected response.
+To verify the connection: add an **If** step that checks the response body contains `unlocked`.
 
-### Alternative: install the cert on the iPhone
+To install the cert instead of pinning: AirDrop `certs/cert.pem` → install profile → Settings → General → About → Certificate Trust Settings → enable.
 
-If you don't want to maintain a pinned fingerprint, AirDrop `certs/cert.pem` to the iPhone → install the profile (Settings → General → VPN & Device Management) → trust it (Settings → General → About → Certificate Trust Settings). The drawback: when the cert regenerates (every 365 days, or if you delete `certs/`), you have to redo this on the iPhone.
+---
 
-## Endpoints
-
-### `GET /`
-Health check. Returns `MacAPI is online`.
-
-### `GET /lock`
-Locks the Mac with Ctrl+Cmd+Q via Quartz. Requires `Authorization: <OWNER_TOKEN>`.
-
-### `POST /unlock`
-SHA-256-checks the password against `PASSWORD_HASH`, then types it (only if the screen is locked). Body:
-
-```json
-{ "password": "the-mac-password" }
-```
-
-The `Authorization: <OWNER_TOKEN>` header is required. If the header is wrong → 401. If the password doesn't hash to `PASSWORD_HASH` → 401. If both pass and the screen is locked → Quartz types the password and presses Return.
-
-## Regenerate the cert
-
-```bash
-rm certs/cert.pem certs/key.pem
-uv run main.py
-```
-
-You'll get a new Ed25519 cert with a new SHA-256. Update the iOS Shortcut's pinned fingerprint (or re-AirDrop the new cert to the iPhone).
-
-To upgrade to ML-DSA-87 when iOS gains TLS support for it, change `ed25519.Ed25519PrivateKey.generate()` in `cert.py` back to shelling out to `openssl genpkey -algorithm ml-dsa-87`. The rest of the stack (TLS 1.3, AES-256-GCM, hash check) is unchanged.
-
-## Reset the password hash
-
-If the Mac login password changes:
-
-```bash
-# Remove the old hash from .env (uv run python -c ... or edit)
-sed -i '' '/^PASSWORD_HASH=/d' .env
-uv run main.py        # will prompt for the new password again
-```
-
-## Running as a launchd service
+## Run as a launchd service
 
 ```bash
 cp com.user.macapi.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.macapi.plist
 ```
 
-OWNER_TOKEN, PASSWORD_HASH, the cert, and the Keychain entry all persist across restarts. The `PASSWORD_HASH` is read from `.env` at startup; no interactive prompt on subsequent runs.
+`OWNER_TOKEN`, `PASSWORD_HASH`, cert, and Keychain entry persist across restarts. No interactive prompt on subsequent runs.
 
-## Testing
+---
+
+## `/poweroff` — BFU mode
+
+FileVault encrypts the disk. The decryption key lives in RAM while the Mac is unlocked. `/poweroff` calls `sudo shutdown -h now`, wiping all RAM. On next boot, the FileVault password is required before any data is accessible — even with physical access to the disk.
+
+Requires passwordless sudo for `/sbin/shutdown`. `setup.sh` configures this.
+
+---
+
+## Key management
+
+**Rotate the TLS cert:**
+```bash
+rm certs/cert.pem certs/key.pem
+uv run python main.py
+```
+Update the pinned fingerprint in the iOS Shortcut.
+
+**Reset the password hash** (e.g. after changing the Mac login password):
+```bash
+sed -i '' '/^PASSWORD_HASH=/d' .env
+uv run python main.py   # prompts for the new password
+```
+
+**View the Keychain secret** (for envelope mode setup):
+```bash
+uv run python tools/print_secret.py
+```
+
+---
+
+## Tests
 
 ```bash
 uv run pytest
 ```
 
-76 tests cover:
-- `test_crypto.py` — AES-256-GCM envelope (Option A, retained for future use)
-- `test_keychain.py` — real Keychain roundtrip, auto-cleanup
-- `test_password_hash.py` — hash + constant-time verify
+76 tests across:
+- `test_crypto.py` — AES-256-GCM envelope decryption
+- `test_keychain.py` — real Keychain roundtrip with auto-cleanup
+- `test_password_hash.py` — hash generation and constant-time verify
 - `test_typer.py` — Quartz keyboard event mocking
-- `test_server.py` — both envelope (Option A) and plaintext (Option B) unlock flows, all auth-hash rejection paths
-- `test_cert.py` — Ed25519 generation, TLS 1.3 context, AES-256-GCM first cipher, TLS 1.2 rejection
+- `test_server.py` — envelope and plaintext unlock flows, all auth/hash rejection paths
+- `test_cert.py` — Ed25519 generation, TLS 1.3 context, cipher selection, TLS 1.2 rejection
+- `test_paths.py` — path resolution across project dir and `~/Library/Application Support/MacAPI`
+
+```bash
+uv run ruff check   # lint
+```
+
+---
+
+## Post-quantum readiness
+
+The TLS bulk cipher (AES-256-GCM) provides ~128-bit post-quantum security under Grover's algorithm. The server cert uses Ed25519 today. When iOS gains TLS support for ML-DSA-87, swap one line in `cert.py` — the rest of the stack is unchanged.
+
+---
+
+## Security
+
+Vulnerabilities: `security@snyco.dev` — do not open a public issue.
+
+See [SECURITY.md](SECURITY.md) for scope, disclosure timeline, and what is explicitly out of scope (physical access, iPhone compromise).

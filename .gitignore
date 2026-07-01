@@ -232,6 +232,14 @@ certs/
 /run
 /to
 
+# --- AI agent configuration (local dev tooling, not part of project source) ---
+AGENTS.md
+CLAUDE.md
+WORKFLOW_STATE.md
+opencode.json
+.claude/
+.opencode/
+
 # --- Uwitz SSH credentials ---
 .uwz/
 
