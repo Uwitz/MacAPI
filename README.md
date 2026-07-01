@@ -208,6 +208,6 @@ The TLS bulk cipher (AES-256-GCM) provides ~128-bit post-quantum security under 
 
 ## Security
 
-Vulnerabilities: `security@snyco.dev` — do not open a public issue.
+Vulnerabilities: `security@uwitz.org` — do not open a public issue.
 
 See [SECURITY.md](SECURITY.md) for scope, disclosure timeline, and what is explicitly out of scope (physical access, iPhone compromise).
